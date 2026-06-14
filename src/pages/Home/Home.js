@@ -32,11 +32,25 @@ export default function Home({ profile, onNavigate }) {
     const totalAgua = (agua||[]).reduce((s,a)=>s+a.ml,0)
     const totalEj = (entrenos||[]).reduce((s,e)=>s+(e.calorias_quemadas||0),0)
     setHoy({ calorias:totalCal, ejercicio:totalEj, agua:totalAgua/1000, pasos:pasos?.pasos||0, comidas:comidas||[] })
-    const fitConectado = localStorage.getItem('googlefit_conectado')
-    setGoogleConectado(!!fitConectado)
+    return pasos?.pasos || 0
   }, [today])
 
-  useEffect(() => { fetchHoy() }, [fetchHoy])
+  // Al abrir la app: carga datos y si Google Fit ya está conectado, sincroniza pasos automáticamente
+  useEffect(() => {
+    const init = async () => {
+      await fetchHoy()
+      const fitConectado = localStorage.getItem('googlefit_conectado')
+      setGoogleConectado(!!fitConectado)
+      if (fitConectado) {
+        // Sincronizar pasos automáticamente sin que el usuario haga nada
+        const pasos = await sincronizarPasos()
+        if (pasos !== null) {
+          setHoy(h => ({ ...h, pasos }))
+        }
+      }
+    }
+    init()
+  }, [fetchHoy, sincronizarPasos])
 
   async function addAgua() {
     const uid = (await supabase.auth.getUser()).data.user?.id
@@ -59,14 +73,6 @@ export default function Home({ profile, onNavigate }) {
   async function sincronizarAhora() {
     const pasos = await sincronizarPasos()
     if (pasos !== null) setHoy(h => ({ ...h, pasos }))
-  }
-
-  async function registrarPasosManual() {
-    const val = prompt(`Pasos actuales: ${hoy.pasos}\n\n¿Cuántos pasos llevas hoy?`)
-    if (!val || isNaN(val)) return
-    const uid = (await supabase.auth.getUser()).data.user?.id
-    await supabase.from('pasos_diarios').upsert({ user_id:uid, pasos:parseInt(val), fecha:today })
-    setHoy(h => ({ ...h, pasos: parseInt(val) }))
   }
 
   const hour = new Date().getHours()
@@ -121,7 +127,7 @@ export default function Home({ profile, onNavigate }) {
           <div className="metric-card" style={{ cursor:'pointer' }}
             onClick={googleConectado ? sincronizarAhora : conectarGoogleFit}>
             <div className="metric-label">
-              {googleConectado ? '👣 Pasos hoy' : '👣 Pasos — toca para conectar'}
+              {cargandoFit ? '🔄 Sincronizando...' : googleConectado ? '👣 Pasos hoy · Google Fit ✓' : '👣 Pasos — conectar'}
             </div>
             <div className="metric-value" style={{ fontSize:18 }}>
               {cargandoFit ? '...' : hoy.pasos.toLocaleString()}
@@ -130,7 +136,7 @@ export default function Home({ profile, onNavigate }) {
               <div className="progress-fill" style={{ width:`${Math.min(100,(hoy.pasos/10000)*100)}%`,background:'#1D9E75' }}></div>
             </div>
             <div className="metric-sub">
-              {googleConectado ? 'Google Fit ✓ · toca para sincronizar' : 'Conectar Google Fit'}
+              {googleConectado ? 'Auto · toca para forzar sync' : 'Toca para conectar Google Fit'}
             </div>
           </div>
           <div className="metric-card">
@@ -148,7 +154,7 @@ export default function Home({ profile, onNavigate }) {
             <span style={{ fontSize:20 }}>🦶</span>
             <div style={{ flex:1 }}>
               <div style={{ fontSize:12,fontWeight:600,color:'#633806' }}>Conecta Google Fit para pasos automáticos</div>
-              <div style={{ fontSize:11,color:'#854F0B' }}>Toca aquí · solo se pide permiso una vez</div>
+              <div style={{ fontSize:11,color:'#854F0B' }}>Solo se pide permiso una vez · luego sincroniza al abrir la app</div>
             </div>
             <span style={{ color:'#633806',fontSize:14 }}>›</span>
           </div>
