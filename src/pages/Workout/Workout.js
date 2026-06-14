@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../lib/supabase'
 
 const ACTIVIDADES = [
@@ -28,13 +28,13 @@ export default function Workout({ profile }) {
   const today = new Date().toISOString().split('T')[0]
   const peso = profile.peso_inicial_kg || 75
 
-  useEffect(() => { fetchHistorial() }, [])
-
-  async function fetchHistorial() {
+  const fetchHistorial = useCallback(async () => {
     const uid = (await supabase.auth.getUser()).data.user?.id
     const { data } = await supabase.from('entrenamientos').select('*').eq('user_id', uid).eq('fecha', today).order('created_at', { ascending: false })
     setHistorial(data || [])
-  }
+  }, [today])
+
+  useEffect(() => { fetchHistorial() }, [fetchHistorial])
 
   function calcDuracion() {
     if (!form.inicio || !form.fin) return 0
@@ -47,9 +47,14 @@ export default function Workout({ profile }) {
     const dur = act?.id === 'caminadora'
       ? intervalos.filter(i => i.tipo === 'Correr').reduce((s, i) => s + Number(i.min), 0)
       : calcDuracion()
-    const base = CAL_MIN[act?.id || 'otro'] * peso / 75
+    const base = (CAL_MIN[act?.id || 'otro'] * peso) / 75
     const mult = CAL_INTENS[form.intensidad] || 1
     return Math.round(dur * base * mult)
+  }
+
+  async function eliminarEntreno(id) {
+    await supabase.from('entrenamientos').delete().eq('id', id)
+    fetchHistorial()
   }
 
   async function guardar() {
@@ -64,14 +69,25 @@ export default function Workout({ profile }) {
       duracion_min: dur, calorias_quemadas: cal, fecha: today
     }).select().single()
     if (entreno && act.id === 'gym') {
-      const exs = ejercicios.filter(e => e.nombre).map((e, i) => ({ entrenamiento_id: entreno.id, nombre: e.nombre, series: Number(e.series), repeticiones: Number(e.reps), peso_kg: Number(e.kg), orden: i + 1 }))
+      const exs = ejercicios.filter(e => e.nombre).map((e, i) => ({
+        entrenamiento_id: entreno.id, nombre: e.nombre,
+        series: Number(e.series), repeticiones: Number(e.reps),
+        peso_kg: Number(e.kg), orden: i + 1
+      }))
       if (exs.length) await supabase.from('ejercicios').insert(exs)
     }
     if (entreno && act.id === 'caminadora') {
-      const ints = intervalos.map((iv, i) => ({ entrenamiento_id: entreno.id, orden: i + 1, duracion_min: Number(iv.min), velocidad_kmh: Number(iv.kmh), tipo: iv.tipo.toLowerCase() }))
+      const ints = intervalos.map((iv, i) => ({
+        entrenamiento_id: entreno.id, orden: i + 1,
+        duracion_min: Number(iv.min), velocidad_kmh: Number(iv.kmh),
+        tipo: iv.tipo.toLowerCase()
+      }))
       await supabase.from('intervalos_caminadora').insert(ints)
     }
     setVista('menu'); setAct(null)
+    setEjercicios([{ nombre: '', series: 3, reps: 10, kg: 0 }])
+    setIntervalos([{ min: 10, kmh: 9.5, tipo: 'Correr' }, { min: 2, kmh: 5, tipo: 'Caminar' }])
+    setForm({ parte: 'Brazos', inicio: '', fin: '', posicion: 'Mediocampista', baile: 'Salsa', intensidad: 'Moderada', actividad: '' })
     fetchHistorial()
     setGuardando(false)
   }
@@ -91,22 +107,30 @@ export default function Workout({ profile }) {
           ))}
         </div>
         {historial.length > 0 && <>
-          <div className="section-label">Esta semana</div>
+          <div className="section-label">Hoy</div>
           <div className="card">
             {historial.map(e => (
               <div key={e.id} className="workout-item">
-                <div className="workout-item-icon" style={{ background: ACTIVIDADES.find(a=>a.id===e.tipo)?.bg || '#F4F4F2' }}>
-                  {ACTIVIDADES.find(a=>a.id===e.tipo)?.icon || '💪'}
+                <div className="workout-item-icon" style={{ background: ACTIVIDADES.find(a=>a.id===e.tipo)?.bg||'#F4F4F2' }}>
+                  {ACTIVIDADES.find(a=>a.id===e.tipo)?.icon||'💪'}
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div className="workout-item-name">{ACTIVIDADES.find(a=>a.id===e.tipo)?.label} {e.subtipo ? `· ${e.subtipo}` : ''}</div>
-                  <div className="workout-item-sub">Hoy · {e.duracion_min} min</div>
+                  <div className="workout-item-name">{ACTIVIDADES.find(a=>a.id===e.tipo)?.label} {e.subtipo?`· ${e.subtipo}`:''}</div>
+                  <div className="workout-item-sub">{e.duracion_min} min</div>
                 </div>
                 <div className="workout-item-kcal">-{e.calorias_quemadas} kcal</div>
+                <button onClick={() => eliminarEntreno(e.id)} style={{ background:'none',border:'none',color:'#E24B4A',cursor:'pointer',fontSize:16,marginLeft:6 }}>×</button>
               </div>
             ))}
           </div>
         </>}
+        {historial.length === 0 && (
+          <div className="empty-state">
+            <div className="empty-icon">💪</div>
+            <div className="empty-title">Sin entrenamientos hoy</div>
+            <div className="empty-sub">Selecciona una actividad arriba para registrar</div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -119,12 +143,20 @@ export default function Workout({ profile }) {
       <div className="page-content">
         {act?.id === 'gym' && <>
           <div className="section-label">Parte del cuerpo</div>
-          {PARTES.map(p => <button key={p} className={`sel-btn ${form.parte===p?'active':''}`} onClick={() => setForm(f=>({...f,parte:p}))}><div className="sel-btn-title">{p}</div></button>)}
+          {PARTES.map(p => (
+            <button key={p} className={`sel-btn ${form.parte===p?'active':''}`} onClick={() => setForm(f=>({...f,parte:p}))}>
+              <div className="sel-btn-title">{p}</div>
+            </button>
+          ))}
         </>}
         {act?.id === 'futbol' && <>
           <div className="section-label">Posición</div>
           <div className="grid-2" style={{ marginBottom: 10 }}>
-            {POSICIONES.map(p => <button key={p} className={`sel-btn ${form.posicion===p?'active':''}`} onClick={() => setForm(f=>({...f,posicion:p}))}><div className="sel-btn-title">{p}</div></button>)}
+            {POSICIONES.map(p => (
+              <button key={p} className={`sel-btn ${form.posicion===p?'active':''}`} onClick={() => setForm(f=>({...f,posicion:p}))}>
+                <div className="sel-btn-title">{p}</div>
+              </button>
+            ))}
           </div>
         </>}
         {act?.id === 'baile' && <>
@@ -133,17 +165,27 @@ export default function Workout({ profile }) {
         </>}
         {['spinning','otro'].includes(act?.id) && <>
           <div className="section-label">Intensidad</div>
-          {INTENSIDADES.map(i => <button key={i} className={`sel-btn ${form.intensidad===i?'active':''}`} onClick={()=>setForm(f=>({...f,intensidad:i}))}><div className="sel-btn-title">{i}</div></button>)}
+          {INTENSIDADES.map(i => (
+            <button key={i} className={`sel-btn ${form.intensidad===i?'active':''}`} onClick={()=>setForm(f=>({...f,intensidad:i}))}>
+              <div className="sel-btn-title">{i}</div>
+            </button>
+          ))}
         </>}
         {act?.id === 'otro' && <>
           <div className="section-label">¿Qué actividad?</div>
-          <input className="input" placeholder="Yoga, natación..." value={form.actividad} onChange={e=>setForm(f=>({...f,actividad:e.target.value}))} />
+          <input className="input" placeholder="Yoga, natación, boxeo..." value={form.actividad} onChange={e=>setForm(f=>({...f,actividad:e.target.value}))} />
         </>}
 
         <div className="section-label">Horario</div>
-        <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-          <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: '#888780', marginBottom: 4 }}>Inicio</div><input className="input" style={{ marginBottom: 0 }} type="time" value={form.inicio} onChange={e=>setForm(f=>({...f,inicio:e.target.value}))} /></div>
-          <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: '#888780', marginBottom: 4 }}>Fin</div><input className="input" style={{ marginBottom: 0 }} type="time" value={form.fin} onChange={e=>setForm(f=>({...f,fin:e.target.value}))} /></div>
+        <div style={{ display:'flex',gap:10,marginBottom:10 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:11,color:'#888780',marginBottom:4 }}>Inicio</div>
+            <input className="input" style={{ marginBottom:0 }} type="time" value={form.inicio} onChange={e=>setForm(f=>({...f,inicio:e.target.value}))} />
+          </div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:11,color:'#888780',marginBottom:4 }}>Fin</div>
+            <input className="input" style={{ marginBottom:0 }} type="time" value={form.fin} onChange={e=>setForm(f=>({...f,fin:e.target.value}))} />
+          </div>
         </div>
 
         {act?.id === 'gym' && <>
@@ -152,7 +194,7 @@ export default function Workout({ profile }) {
             {ejercicios.map((e, i) => (
               <div key={i} className="ex-row">
                 <div className="ex-icon">💪</div>
-                <input className="ex-input" style={{ flex: 1, width: 'auto', fontSize: 12, border: 'none', outline: 'none' }} placeholder="Ejercicio..." value={e.nombre} onChange={ev => setEjercicios(ex => ex.map((x,j)=>j===i?{...x,nombre:ev.target.value}:x))} />
+                <input style={{ flex:1,border:'none',outline:'none',fontSize:12,background:'transparent' }} placeholder="Ejercicio..." value={e.nombre} onChange={ev=>setEjercicios(ex=>ex.map((x,j)=>j===i?{...x,nombre:ev.target.value}:x))} />
                 <input className="ex-input" value={e.series} onChange={ev=>setEjercicios(ex=>ex.map((x,j)=>j===i?{...x,series:ev.target.value}:x))} />
                 <span className="ex-unit">ser</span>
                 <input className="ex-input" value={e.reps} onChange={ev=>setEjercicios(ex=>ex.map((x,j)=>j===i?{...x,reps:ev.target.value}:x))} />
@@ -161,7 +203,8 @@ export default function Workout({ profile }) {
                 <span className="ex-unit">kg</span>
               </div>
             ))}
-            <button style={{ width:'100%',background:'none',border:'none',color:'#378ADD',fontSize:12,padding:'8px 0',cursor:'pointer' }} onClick={()=>setEjercicios(e=>[...e,{nombre:'',series:3,reps:10,kg:0}])}>+ Añadir ejercicio</button>
+            <button style={{ width:'100%',background:'none',border:'none',color:'#378ADD',fontSize:12,padding:'8px 0',cursor:'pointer' }}
+              onClick={()=>setEjercicios(e=>[...e,{nombre:'',series:3,reps:10,kg:0}])}>+ Añadir ejercicio</button>
           </div>
         </>}
 
@@ -172,22 +215,27 @@ export default function Workout({ profile }) {
               <div className="int-num">{i+1}</div>
               <input className="int-input" placeholder="min" value={iv.min} onChange={e=>setIntervalos(iv=>iv.map((x,j)=>j===i?{...x,min:e.target.value}:x))} />
               <input className="int-input" placeholder="km/h" value={iv.kmh} onChange={e=>setIntervalos(iv=>iv.map((x,j)=>j===i?{...x,kmh:e.target.value}:x))} />
-              <select className="int-input" value={iv.tipo} onChange={e=>setIntervalos(iv=>iv.map((x,j)=>j===i?{...x,tipo:e.target.value}:x))} style={{padding:'4px'}}>
+              <select className="int-input" value={iv.tipo} onChange={e=>setIntervalos(iv=>iv.map((x,j)=>j===i?{...x,tipo:e.target.value}:x))} style={{ padding:'4px' }}>
                 {['Correr','Caminar','Descanso'].map(t=><option key={t}>{t}</option>)}
               </select>
             </div>
           ))}
-          <button style={{ background:'none',border:'none',color:'#378ADD',fontSize:12,cursor:'pointer',padding:'6px 0' }} onClick={()=>setIntervalos(i=>[...i,{min:5,kmh:8,tipo:'Correr'}])}>+ Añadir intervalo</button>
+          <button style={{ background:'none',border:'none',color:'#378ADD',fontSize:12,cursor:'pointer',padding:'6px 0' }}
+            onClick={()=>setIntervalos(i=>[...i,{min:5,kmh:8,tipo:'Correr'}])}>+ Añadir intervalo</button>
         </>}
 
-        <div className="card" style={{ background: '#F0FBF7', border: 'none', marginTop: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div><div style={{ fontSize: 12, color: '#888780' }}>{act?.label} · {calcDuracion()} min</div><div style={{ fontSize: 11, color: '#1D9E75' }}>estimación basada en tu peso</div></div>
-            <div style={{ fontSize: 24, fontWeight: 700, color: '#1D9E75' }}>~{calcCal()} kcal</div>
+        <div className="card" style={{ background:'#F0FBF7',border:'none',marginTop:8 }}>
+          <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+            <div>
+              <div style={{ fontSize:12,color:'#888780' }}>{act?.label} · {calcDuracion()} min</div>
+              <div style={{ fontSize:11,color:'#1D9E75' }}>basado en tu peso ({peso}kg)</div>
+            </div>
+            <div style={{ fontSize:24,fontWeight:700,color:'#1D9E75' }}>~{calcCal()} kcal</div>
           </div>
         </div>
-        <button className="btn btn-primary" onClick={guardar} disabled={guardando} style={{ background: act?.color || '#1D9E75', marginTop: 4 }}>
-          {guardando ? 'Guardando...' : `Guardar · ~${calcCal()} kcal`}
+        <button className="btn btn-primary" onClick={guardar} disabled={guardando}
+          style={{ background: act?.color||'#1D9E75', marginTop:4 }}>
+          {guardando?'Guardando...':`Guardar · ~${calcCal()} kcal`}
         </button>
       </div>
     </div>
